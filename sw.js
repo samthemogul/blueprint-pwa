@@ -1,6 +1,6 @@
 // Offline cache for the Blueprint app shell.
 // Bump VERSION whenever you change any file so phones pick up the update.
-const VERSION = "blueprint-v1";
+const VERSION = "blueprint-v2";
 const SHELL = [
   "./",
   "./index.html",

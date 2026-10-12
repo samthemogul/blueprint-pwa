@@ -237,6 +237,16 @@ svg.chart{width:100%;height:auto;display:block}
 
 .toast{position:fixed;z-index:50;left:50%;transform:translateX(-50%);top:calc(env(safe-area-inset-top,0px) + 58px);border-radius:999px;padding:10px 18px;font-size:15px;font-weight:600;animation:viewin .3s ease both}
 
+/* stays */
+.row.stay{display:grid;gap:8px;justify-content:stretch}
+.stay-top{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.row.stay select{direction:ltr;text-align:left;font-weight:600;font-family:var(--sans);width:auto;max-width:none}
+.row.stay input[type=date]{width:auto}
+.row .switch{-webkit-appearance:none;appearance:none;width:51px;height:31px;padding:0;border-radius:16px;background:var(--card2);position:relative;cursor:pointer;transition:background .2s;flex:none;box-shadow:inset 0 0 0 .5px var(--sep);margin:0}
+.row .switch::after{content:"";position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;box-shadow:0 2px 4px rgba(0,0,0,.25);transition:transform .25s}
+.row .switch:checked{background:var(--good)}
+.row .switch:checked::after{transform:translateX(20px)}
+.seg+.hscroll,.seg+.seg{margin-top:-4px}
 @media (prefers-reduced-motion:reduce){*,*::before{animation:none!important;transition:none!important}}
 @media (min-width:700px){h1.lt{font-size:40px}}
 </style>
@@ -295,34 +305,69 @@ const parse=s=>new Date(s+"T00:00:00");
 const DAY=864e5, BREAKS=[10,22], DELOADS=[10,16,22], KEY="blueprint-v1";
 
 /* ================= state ================= */
-const DEFAULTS={sex:"m",age:21,height:175,weight:85,goal:65,activity:1.55,start:"2026-10-12",examples:true};
+const DEFAULTS={sex:"m",age:21,height:175,weight:85,goal:65,activity:"auto",start:"2026-11-01",examples:true};
+const DEFAULT_STAYS=()=>[{place:"london",from:"2026-11-01",gym:false},{place:"lagos",from:"2026-12-01",gym:true}];
 const UI_DEFAULTS={glass:40,theme:"system",installDismissed:false};
-let state={settings:{...DEFAULTS},log:{},ui:{...UI_DEFAULTS}};
-try{const raw=localStorage.getItem(KEY);if(raw){const s=JSON.parse(raw);state={settings:{...DEFAULTS,...(s.settings||{})},log:s.log||{},ui:{...UI_DEFAULTS,...(s.ui||{})}};}}catch(e){}
+function hydrate(s){
+  s=s||{};
+  const out={schema:2,settings:{...DEFAULTS,...(s.settings||{})},stays:Array.isArray(s.stays)&&s.stays.length?s.stays:DEFAULT_STAYS(),log:s.log||{},ui:{...UI_DEFAULTS,...(s.ui||{})}};
+  if((s.schema||1)<2){ // v1 → v2: the old start date and fixed activity were defaults, not choices
+    if(out.settings.start==="2026-10-12")out.settings.start=DEFAULTS.start;
+    if(+out.settings.activity===1.55)out.settings.activity="auto";
+  }
+  out.stays.sort((a,b)=>a.from<b.from?-1:1);
+  return out;
+}
+let state=hydrate(null);
+try{const raw=localStorage.getItem(KEY);if(raw)state=hydrate(JSON.parse(raw));}catch(e){}
 function save(){try{localStorage.setItem(KEY,JSON.stringify(state));}catch(e){toast("Couldn't save. Storage may be full.");}}
 if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{});
 
-/* ================= maths ================= */
-function calc(){
-  const s=state.settings,w=+s.weight,h=+s.height,a=+s.age,g=+s.goal,act=+s.activity,male=s.sex==="m";
-  const bmr=10*w+6.25*h-5*a+(male?5:-161), tdee=bmr*act, lossWeeks=24;
-  const reqRate=Math.max(0,(w-g)/lossWeeks), reqDef=reqRate*7700/7;
-  const maxDef=Math.min(.25*tdee,w*.01*7700/7), floor=male?1500:1200;
-  let kcal=Math.round((tdee-Math.min(reqDef,maxDef))/50)*50; const floored=kcal<floor; if(floored)kcal=floor;
-  const rate=Math.max(0,tdee-kcal)*7/7700;
-  const protein=Math.round(2*g/5)*5, fat=Math.round(kcal*.25/9/5)*5, carbs=Math.max(0,Math.round((kcal-protein*4-fat*9)/4/5)*5);
-  const oldRate=Math.max(0,(tdee-1450)*7/7700);
-  return {tdee,kcal,rate,pct:rate/w*100,reqRate,protein,fat,carbs,floored,
-    at26:Math.max(g,w-rate*lossWeeks),weeksToGoal:rate>0?Math.ceil((w-g)/rate)+2:Infinity,
-    bmiNow:w/((h/100)**2),bmiGoal:g/((h/100)**2),oldRate,oldPct:oldRate/w*100,maint:Math.round(tdee/50)*50};
+/* ================= places ================= */
+const PLACES={london:{name:"London"},lagos:{name:"Lagos"}};
+function stayAt(d){const t=iso(d);let cur=state.stays[0];for(const s of state.stays)if(s.from<=t)cur=s;return cur;}
+function prevStay(stay){const i=state.stays.indexOf(stay);return i>0?state.stays[i-1]:null;}
+function nextMove(d){const t=iso(d),cur=stayAt(d);return state.stays.find(s=>s.from>t&&s.place!==cur.place)||null;}
+function dateForPlace(place){ // the date whose numbers apply when you plan for a place
+  const now=new Date();if(stayAt(now).place===place)return now;
+  const up=state.stays.find(s=>s.place===place&&s.from>iso(now));return up?parse(up.from):now;
 }
+const placeLabel=s=>`${PLACES[s.place].name} · ${s.gym?"gym":"no gym"}`;
+
+/* ================= maths ================= */
 const weekOf=d=>Math.floor((parse(iso(d)).getTime()-parse(state.settings.start).getTime())/DAY/7)+1;
+const weekStart=k=>new Date(parse(state.settings.start).getTime()+(k-1)*7*DAY+12*36e5);
 const stepsFor=w=>w<=0?"–":w<=4?[6000,7000,8000,9000][w-1]:w<=16?10000:w<=22?12000:10000;
+const ACT_LABEL={1.375:"light",1.55:"moderate",1.725:"high"};
+function activityAt(d){const a=state.settings.activity;if(a!=="auto")return +a;return (weekOf(d)<=4||!stayAt(d).gym)?1.375:1.55;}
+function calcCore(w,act){
+  const s=state.settings,h=+s.height,a=+s.age,g=+s.goal,male=s.sex==="m";
+  const bmr=10*w+6.25*h-5*a+(male?5:-161),tdee=bmr*act;
+  const reqRate=Math.max(0,(w-g)/24),reqDef=reqRate*7700/7;
+  const maxDef=Math.min(.25*tdee,w*.01*7700/7),floor=male?1500:1200;
+  let kcal=Math.round((tdee-Math.min(reqDef,maxDef))/50)*50;const floored=kcal<floor;if(floored)kcal=floor;
+  const rate=Math.max(0,tdee-kcal)*7/7700;
+  const protein=Math.round(2*g/5)*5,fat=Math.round(kcal*.25/9/5)*5,carbs=Math.max(0,Math.round((kcal-protein*4-fat*9)/4/5)*5);
+  return {tdee,kcal,rate,pct:rate/w*100,reqRate,protein,fat,carbs,floored,maint:Math.round(tdee/50)*50,act};
+}
+function project(startW){ // week by week: weight drops, calories and activity follow your stays
+  const g=+state.settings.goal,path=[startW];let w=startW,goalWeek=startW<=g?0:Infinity;
+  for(let k=1;k<=80;k++){
+    if(!BREAKS.includes(k)&&w>g){const r=calcCore(w,activityAt(weekStart(k)));w=Math.max(g,w-r.rate);}
+    path.push(w);if(w<=g+.05&&goalWeek===Infinity)goalWeek=k;
+  }
+  return {path,at26:path[26],goalWeek};
+}
+function calc(d=new Date()){
+  const s=state.settings,w=+s.weight,h=+s.height,g=+s.goal;
+  const r=calcCore(w,activityAt(d)),p=project(w),oldRate=Math.max(0,(r.tdee-1450)*7/7700);
+  return {...r,at26:p.at26,weeksToGoal:p.goalWeek,bmiNow:w/((h/100)**2),bmiGoal:g/((h/100)**2),oldRate,oldPct:oldRate/w*100,stay:stayAt(d)};
+}
 
 /* ================= content ================= */
 const PHASES=[
-  {name:"Foundation",weeks:[1,4],color:"var(--p-green)",train:"Home circuit, 3 days a week (Mon, Wed, Fri). Learn the movements.",food:"Eat at your target. Weigh and log everything; learn your portions.",steps:"6,000 rising to 9,000 a day.",check:"Week 4: re-enter weight, take photos, join a gym."},
-  {name:"Base",weeks:[5,10],color:"var(--p-yellow)",train:"Gym upper/lower, 4 days at RIR 2–3. Week 10 is a deload.",food:"Target calories. Week 10: diet break at maintenance for 7 days.",steps:"10,000 a day.",check:"Week 9: lifts should climb most weeks while you learn them."},
+  {name:"Foundation",weeks:[1,4],color:"var(--p-green)",train:"Home circuit, 3 days a week (Mon, Wed, Fri). Learn the movements. Works in a small room anywhere.",food:"Eat at your target. Weigh and log everything; learn your portions.",steps:"6,000 rising to 9,000 a day.",check:"Week 4: re-enter weight, take photos, sort out a gym for wherever you'll be."},
+  {name:"Base",weeks:[5,10],color:"var(--p-yellow)",train:"Upper/lower split, 4 days at RIR 2–3. Somewhere without a gym? The app shows the no-gym version. Week 10 is a deload.",food:"Target calories. Week 10: diet break at maintenance for 7 days.",steps:"10,000 a day.",check:"Week 9: lifts should climb most weeks while you learn them."},
   {name:"Build",weeks:[11,16],color:"var(--p-blue)",train:"RIR 1–2. Add a 4th set to the first lift each day. Incline-walk finishers. Week 16 deload.",food:"Recalculate at week 12. Carbs around training.",steps:"10,000–12,000 a day.",check:"Week 16: photos, waist, lifts. Check Adjustments."},
   {name:"Push",weeks:[17,22],color:"var(--p-red)",train:"Hold volume and weights; keeping strength is success now. Week 22 deload.",food:"Hunger peaks. More vegetables and high-volume meals. Week 22: diet break at maintenance.",steps:"12,000 a day, or 10,000 plus two 20-minute incline walks.",check:"Week 20: recalculate. Trust the waist when the scale slows."},
   {name:"Finish",weeks:[23,26],color:"var(--p-white)",train:"Last block. Test a 5-rep max on 2–3 lifts in week 26 and compare with week 5.",food:"Target calories, then add 100–150 kcal a week until maintenance.",steps:"Keep 10,000+ for life.",check:"Week 26: full review. Keep cutting or start a lean-gain phase."}
@@ -333,32 +378,84 @@ const FOOD={
   egg:["Egg, boiled or poached","1 large","Protein",75,6.5],chicken:["Chicken breast, skinless, grilled","150 g raw","Protein",165,34],
   catfish:["Catfish","200 g raw","Protein",210,36],tilapia:["Tilapia or croaker, grilled","200 g raw","Protein",190,40],
   mackerel:["Mackerel (titus)","150 g raw","Protein",300,28],beef:["Lean beef","150 g raw","Protein",250,31],
+  beef5:["Beef mince, 5% fat","125 g raw","Protein",160,26],
   goat:["Goat meat, trimmed","150 g raw","Protein",215,32],sardines:["Sardines, drained","1 tin","Protein",190,20],
   tuna:["Tuna in water, drained","1 tin","Protein",120,26],soya:["Soya chunks","50 g dry","Protein",170,26],
-  whey:["Whey protein","1 scoop, 30 g","Protein",120,24],milk:["Milk, low-fat or skimmed","200 ml","Protein",100,7],
+  whey:["Whey protein","1 scoop, 30 g","Protein",120,24],milk:["Milk, skimmed or semi-skimmed","200 ml","Protein",100,7],
+  skyr:["Skyr or 0% Greek yoghurt","200 g","Protein",120,20],bar:["Protein bar","1 bar, 60 g","Protein",220,20],
   moin:["Moin moin with egg","1 wrap","Protein + carb",180,10],beans:["Beans (ewa), light oil","1 cup cooked","Protein + carb",225,15],
-  akara:["Akara, shallow-fried","3 medium","Protein + carb",270,10],
+  akara:["Akara, shallow-fried","3 medium","Protein + carb",270,10],bakedbeans:["Baked beans, reduced sugar","½ tin, 200 g","Protein + carb",140,9],
+  pancakes:["Protein pancakes: 40 g oats, 2 eggs, 1 banana, splash of milk","1 batch, 1 tsp oil","Protein + carb",470,22],
   yam:["Yam, boiled","150 g, 2 slices","Starch",175,2.5],rice:["White rice","1 cup cooked","Starch",230,4],
   jollof:["Jollof rice","1 cup","Starch",300,5],spag:["Spaghetti","1½ cups cooked","Starch",330,12],
-  plantain:["Unripe plantain, boiled","1 medium","Starch",220,2],eba:["Eba","1 fist-size wrap","Starch",180,1],
+  plantain:["Unripe plantain, boiled","1 medium","Starch",220,2],dodo:["Ripe plantain, air-fried or baked","1 medium","Starch",250,2],
+  eba:["Eba","1 fist-size wrap","Starch",180,1],
   amala:["Amala","1 fist-size wrap","Starch",170,2],oatsw:["Oat swallow","1 wrap, 50 g oats","Starch",190,7],
   oats:["Oats","50 g dry","Starch",190,6.5],pap:["Pap (ogi)","40 g dry, 1 bowl","Starch",145,3],
-  bread:["Wholewheat bread","2 slices","Starch",160,7],corn:["Corn, boiled","1 cob","Starch",100,3.5],
+  custard:["Custard: powder, skimmed milk, sweetener","20 g powder + 200 ml","Starch",140,7.5],
+  bread:["Wholewheat bread","2 slices","Starch",160,7],wrap:["Wholemeal tortilla wrap","1 large","Starch",180,5],
+  corn:["Corn, boiled","1 cob","Starch",100,3.5],
+  potato:["Potatoes, boiled or baked","250 g","Starch",190,5],sweetpot:["Sweet potato, baked","200 g","Starch",180,3],
   okra:["Okra soup base, 1 tsp palm oil","1 bowl","Soup and veg",90,3],efo:["Efo riro base, 2 tsp oil","1 bowl","Soup and veg",120,4],
+  egusi:["Egusi soup base, 2 tsp oil","1 bowl","Soup and veg",260,9],
   stew:["Tomato stew, 1 tsp oil","3 tbsp","Soup and veg",70,1],pepsoup:["Pepper soup broth","1 bowl","Soup and veg",30,1],
-  salad:["Cucumber, tomato, garden egg","1 plate","Soup and veg",30,1],
+  salad:["Cucumber, tomato, garden egg or salad leaves","1 plate","Soup and veg",30,1],veg:["Frozen mixed or stir-fry veg","150 g","Soup and veg",60,4],
   banana:["Banana","1 medium","Fruit",105,1.3],orange:["Orange","1 medium","Fruit",60,1],fruit:["Watermelon or pineapple","2 cups","Fruit",90,1.5],
-  nuts:["Groundnuts, roasted","30 g","Fat",170,7],oil:["Cooking oil, measured","1 tsp","Fat",40,0]
+  apple:["Apple","1 medium","Fruit",80,.4],berries:["Frozen berries","100 g","Fruit",50,1],
+  nuts:["Groundnuts, roasted","30 g","Fat",170,7],pb:["Peanut butter, level tbsp","15 g","Fat",95,4],oil:["Cooking oil, measured","1 tsp","Fat",40,0]
 };
-const DAYS=[
-  {d:"Mon",full:"Monday",tag:"Upper A",meals:[["Breakfast","Omelette and boiled yam",[["egg",3],["oil",1],["yam",1]]],["Lunch","Jollof with grilled chicken",[["jollof",1],["chicken",1],["salad",1]]],["Snack","Post-gym shake",[["whey",1],["milk",1],["banana",1]]],["Dinner","Okra soup, catfish and eba",[["okra",1],["catfish",1],["eba",1]]]]},
-  {d:"Tue",full:"Tuesday",tag:"Lower A",meals:[["Breakfast","Pap with milk, boiled eggs",[["pap",1],["milk",1],["egg",2]]],["Lunch","Beans, boiled plantain and sardines",[["beans",1],["plantain",1],["sardines",1]]],["Snack","Tuna salad and corn",[["tuna",1],["salad",1],["corn",1]]],["Dinner","Goat meat pepper soup with yam",[["goat",1],["pepsoup",1],["yam",1]]]]},
-  {d:"Wed",full:"Wednesday",tag:"Rest and walk",meals:[["Breakfast","Protein oats",[["oats",1],["milk",1],["whey",1],["banana",1]]],["Lunch","Rice, efo riro and chicken",[["rice",1],["efo",1],["chicken",1]]],["Snack","Boiled eggs and an orange",[["egg",3],["orange",1]]],["Dinner","Moin moin plate",[["moin",2],["egg",1],["salad",1]]]]},
-  {d:"Thu",full:"Thursday",tag:"Upper B",meals:[["Breakfast","Egg sandwich",[["bread",1],["egg",3],["oil",1]]],["Lunch","Spaghetti with lean beef sauce",[["spag",1],["beef",1],["stew",1]]],["Snack","Shake and groundnuts",[["whey",1],["milk",1],["nuts",1]]],["Dinner","Grilled tilapia, boiled plantain",[["tilapia",1],["plantain",1],["salad",1]]]]},
-  {d:"Fri",full:"Friday",tag:"Lower B",meals:[["Breakfast","Akara, pap and eggs",[["akara",1],["pap",1],["milk",1],["egg",2]]],["Lunch","Rice with titus fish stew",[["rice",1],["mackerel",1],["stew",1]]],["Snack","Corn and tuna",[["corn",1],["tuna",1]]],["Dinner","Efo riro, chicken and amala",[["efo",1],["chicken",1],["amala",1]]]]},
-  {d:"Sat",full:"Saturday",tag:"Active rest",meals:[["Breakfast","Moin moin, pap and egg",[["moin",1],["pap",1],["milk",1],["egg",1]]],["Lunch","Soya-chunk jollof",[["jollof",1],["soya",1],["salad",1]]],["Snack","Fruit, groundnuts and a shake",[["fruit",1],["nuts",1],["whey",1]]],["Dinner","Catfish pepper soup with yam",[["catfish",1],["pepsoup",1],["yam",1]]]]},
-  {d:"Sun",full:"Sunday",tag:"Rest",meals:[["Breakfast","Sardine toast",[["bread",1],["sardines",1],["salad",1]]],["Lunch","Rice, chicken stew and moin moin",[["rice",1],["chicken",1],["stew",1],["moin",1]]],["Snack","Shake and banana",[["whey",1],["milk",1],["banana",1]]],["Dinner","Okra soup, tilapia and oat swallow",[["okra",1],["tilapia",1],["oatsw",1]]]]}
-];
+const DN=[["Mon","Monday"],["Tue","Tuesday"],["Wed","Wednesday"],["Thu","Thursday"],["Fri","Friday"],["Sat","Saturday"],["Sun","Sunday"]];
+const mk=rows=>rows.map((meals,i)=>({d:DN[i][0],full:DN[i][1],meals}));
+const MEALPLAN={
+  lagos:mk([
+    [["Breakfast","Omelette and boiled yam",[["egg",3],["oil",1],["yam",1]]],["Lunch","Jollof with grilled chicken",[["jollof",1],["chicken",1],["salad",1]]],["Snack","Post-gym shake",[["whey",1],["milk",1],["banana",1]]],["Dinner","Okra soup, catfish and eba",[["okra",1],["catfish",1],["eba",1]]]],
+    [["Breakfast","Pap with milk, boiled eggs",[["pap",1],["milk",1],["egg",2]]],["Lunch","Beans, boiled plantain and sardines",[["beans",1],["plantain",1],["sardines",1]]],["Snack","Tuna salad and corn",[["tuna",1],["salad",1],["corn",1]]],["Dinner","Goat meat pepper soup with yam",[["goat",1],["pepsoup",1],["yam",1]]]],
+    [["Breakfast","Protein oats",[["oats",1],["milk",1],["whey",1],["banana",1]]],["Lunch","Rice, efo riro and chicken",[["rice",1],["efo",1],["chicken",1]]],["Snack","Boiled eggs and an orange",[["egg",3],["orange",1]]],["Dinner","Moin moin plate",[["moin",2],["egg",1],["salad",1]]]],
+    [["Breakfast","Egg sandwich",[["bread",1],["egg",3],["oil",1]]],["Lunch","Spaghetti with lean beef sauce",[["spag",1],["beef",1],["stew",1]]],["Snack","Shake and groundnuts",[["whey",1],["milk",1],["nuts",1]]],["Dinner","Grilled tilapia, boiled plantain",[["tilapia",1],["plantain",1],["salad",1]]]],
+    [["Breakfast","Akara, pap and eggs",[["akara",1],["pap",1],["milk",1],["egg",2]]],["Lunch","Rice with titus fish stew",[["rice",1],["mackerel",1],["stew",1]]],["Snack","Corn and tuna",[["corn",1],["tuna",1]]],["Dinner","Efo riro, chicken and amala",[["efo",1],["chicken",1],["amala",1]]]],
+    [["Breakfast","Moin moin, pap and egg",[["moin",1],["pap",1],["milk",1],["egg",1]]],["Lunch","Soya-chunk jollof",[["jollof",1],["soya",1],["salad",1]]],["Snack","Fruit, groundnuts and a shake",[["fruit",1],["nuts",1],["whey",1]]],["Dinner","Catfish pepper soup with yam",[["catfish",1],["pepsoup",1],["yam",1]]]],
+    [["Breakfast","Sardine toast",[["bread",1],["sardines",1],["salad",1]]],["Lunch","Rice, chicken stew and moin moin",[["rice",1],["chicken",1],["stew",1],["moin",1]]],["Snack","Shake and banana",[["whey",1],["milk",1],["banana",1]]],["Dinner","Okra soup, tilapia and oat swallow",[["okra",1],["tilapia",1],["oatsw",1]]]]
+  ]),
+  london:mk([
+    [["Breakfast","Porridge with whey and berries",[["oats",1],["milk",1],["whey",1],["berries",1]]],["Lunch","Rice and stew with chicken",[["rice",1],["stew",1],["chicken",1],["veg",1]]],["Snack","Skyr and banana",[["skyr",1],["banana",1]]],["Dinner","Chicken pepper soup with plantain",[["chicken",1],["pepsoup",1],["plantain",1]]]],
+    [["Breakfast","Custard and boiled eggs",[["custard",1],["egg",3]]],["Lunch","Tuna wrap",[["wrap",1],["tuna",1],["salad",1]]],["Snack","Shake and an apple",[["whey",1],["milk",1],["apple",1]]],["Dinner","Spaghetti with lean mince sauce",[["spag",1],["beef5",1],["stew",1],["veg",1]]]],
+    [["Breakfast","Protein pancakes with skyr",[["pancakes",1],["skyr",1]]],["Lunch","Beans and eggs on toast",[["bread",1],["bakedbeans",1],["egg",2]]],["Snack","Skyr and berries",[["skyr",1],["berries",1]]],["Dinner","Baked mackerel, sweet potato and veg",[["mackerel",1],["sweetpot",1],["veg",1]]]],
+    [["Breakfast","Eggs on toast",[["bread",1],["egg",3],["oil",1]]],["Lunch","Rice and stew with chicken (batch)",[["rice",1],["stew",1],["chicken",1],["veg",1]]],["Snack","Shake and banana",[["whey",1],["milk",1],["banana",1]]],["Dinner","Mince chilli with potatoes",[["beef5",1],["stew",1],["veg",1],["potato",1]]]],
+    [["Breakfast","Custard with whey and banana",[["custard",1],["whey",1],["banana",1]]],["Lunch","Chicken wrap",[["wrap",1],["chicken",1],["salad",1]]],["Snack","Skyr and berries",[["skyr",1],["berries",1]]],["Dinner","Egusi with chicken and eba",[["egusi",1],["chicken",1],["eba",1]]]],
+    [["Breakfast","Protein pancakes with skyr",[["pancakes",1],["skyr",1]]],["Lunch","Jollof with chicken",[["jollof",1],["chicken",1],["salad",1]]],["Snack","Apple and peanut butter",[["apple",1],["pb",1]]],["Dinner","Fish pepper soup with plantain",[["tilapia",1],["pepsoup",1],["plantain",1]]]],
+    [["Breakfast","Beans and eggs on toast",[["bread",1],["bakedbeans",1],["egg",2]]],["Lunch","Sunday rice, stew, chicken and dodo",[["rice",1],["stew",1],["chicken",1],["dodo",1]]],["Snack","Shake and berries",[["whey",1],["milk",1],["berries",1]]],["Dinner","Mince stir-fry with sweet potato",[["beef5",1],["veg",1],["sweetpot",1],["oil",1]]]]
+  ])
+};
+const PLACE_INFO={
+  london:{
+    extras:["sardines","bar","yam","pap","potato"],
+    hidden:[["Meal deal: sandwich, crisps, drink","600–900","Protein wrap or salad, fruit and water, ≈450"],["Bakery sausage roll",330,"Boiled eggs or a protein pot"],["Large latte, whole milk",220,"Skimmed milk, or an Americano with a splash"],["Chicken shop wings and chips","900+","Grilled chicken and a side salad, no chips"],["Microwave rice pouch, whole",360,"Half a pouch and extra veg"],["Peanut butter, heaped spoon",150,"Level tablespoon ≈95; weigh it"],["Chocolate bar",230,"Skyr with berries"],["Crisps, 25 g bag",130,"An apple or plain popcorn"],["2 digestive biscuits",140,"Count them, or skip"],["Pint of beer or cider","200–250","Zero-alcohol or a diet drink"],["Fruit juice or smoothie, 250 ml",120,"Whole fruit"]],
+    food:[
+      ["Where to shop","Aldi and Lidl are cheapest for chicken breast, eggs, oats, skyr, tinned fish and frozen veg. Every pack lists kcal per 100 g, so scan barcodes in MyFitnessPal instead of guessing."],
+      ["Nigerian ingredients","African grocers sell garri, egusi, ogi, palm oil, crayfish and stockfish; Peckham, Dalston, Woolwich and Tottenham each have several. Most big supermarkets stock plantain. Yam is in African shops but pricey, so potatoes and sweet potato fill that slot here."],
+      ["Pap or custard","African grocers do sell ogi, so pap is possible. Custard is the easy swap: custard powder made with skimmed milk and sweetener is ≈140 kcal. Let it cool a little, then stir in a scoop of whey for a 30 g protein breakfast."],
+      ["Cold and dark","Winter makes you hungrier. Soups and stews fill you up for few calories: pepper soup, chilli, rice and stew with lots of veg. Batch-cook on Sunday and Wednesday."]],
+    move:[
+      ["Daylight","Sunset is around 4 pm from November to January. Get steps in daylight: a 30-minute lunchtime walk, get off the bus or Tube a stop early, and take the stairs at stations."],
+      ["Rain and cold","A waterproof jacket makes walking a non-issue. When it's really bad, walk laps of a shopping centre or do two 15-minute walks indoors."],
+      ["Home circuit","Needs about 2 × 2 m of floor. Warm up for a full 10 minutes in the cold; cold muscles strain more easily."],
+      ["If you want a gym","Budget gyms such as PureGym and The Gym Group sell monthly memberships with no contract. Turn on Gym for your London stay in Plan and the app switches to the gym sessions."]],
+    water:"2–2.5 L a day, plus about 500 ml per training hour."
+  },
+  lagos:{
+    extras:["beans","akara","nuts","soya","bar"],
+    hidden:[["Malt drink, 33 cl",200,"Water, zero-sugar soda"],["Soft drink, 35 cl",150,"Zero-sugar version"],["Sweetened zobo, 50 cl",170,"Unsweetened with ginger"],["Fried plantain (dodo), 1",350,"Boiled or roasted, ≈220"],["Meat pie",370,"Boiled egg and fruit"],["Puff-puff, each",100,"Cap at 2"],["Chin chin, 50 g",250,"Roasted corn"],["Instant noodles, 1 pack",320,"Add 2 eggs and veg; log it"],["Egusi soup, 1 bowl","400+","Measure oil, add ugu"],["Suya, 100 g",280,"Lean cuts, light oil"]],
+    food:[
+      ["Cheap protein","Eggs, beans, soya chunks, sardines, titus and whole chicken without skin give the most protein per naira. Kpomo is mostly collagen, so don't count it toward your total."],
+      ["Parties","At an owambe, fill the plate with protein first, take one serving of rice, and go easy on small chops. Go back to the plan at the next meal; don't starve the next day."],
+      ["Logging","Search Nigerian foods in MyFitnessPal or Cronometer, or create custom entries from the food reference below."]],
+    move:[
+      ["Beat the heat","Walk early in the morning or after 6 pm. Midday walks in the heat drain you before training."],
+      ["Where to walk","Roads are hard to walk on. Loop an estate or campus, use the treadmill, and walk while you're on calls."],
+      ["First gym week","Find the equipment for each lift and write down your starting weights. Start lighter than you think; the first 2 weeks are for learning."]],
+    water:"2.5–3.5 L a day in the heat, plus about 500 ml per training hour. Don't cut salt hard; you sweat a lot of it out."
+  }
+};
 const SESSIONS={
   "Upper A":[["Dumbbell bench press","3 × 6–10","2–3 min","Backpack floor press"],["Chest-supported or cable row","3 × 8–12","2 min","Backpack bent-over row"],["Seated dumbbell shoulder press","3 × 8–12","2 min","Pike push-up"],["Lat pulldown","3 × 10–12","90 s","Towel door-frame row"],["Lateral raise","3 × 12–20","60 s","Water-bottle raise"],["Triceps pushdown","2 × 10–15","60 s","Bench dip"],["Dumbbell curl","2 × 10–15","60 s","Backpack curl"]],
   "Lower A":[["Back squat or goblet squat","3 × 6–10","2–3 min","Backpack goblet squat"],["Romanian deadlift","3 × 8–10","2 min","Single-leg RDL with backpack"],["Leg curl","2 × 10–15","90 s","Towel slider curl"],["Walking lunge","2 × 10 each leg","90 s","Lunge holding bottles"],["Standing calf raise","3 × 10–15","60 s","Single-leg on a step"],["Plank","3 × 30–60 s","60 s","Same"]],
@@ -373,18 +470,24 @@ const mealTotals=items=>items.reduce((a,[k,q])=>[a[0]+FOOD[k][3]*q,a[1]+FOOD[k][
 const dayTotals=day=>day.meals.reduce((a,m)=>{const t=mealTotals(m[2]);return [a[0]+t[0],a[1]+t[1]]},[0,0]);
 const todayIdx=()=>{const d=new Date().getDay();return d===0?6:d-1};
 function sessionFor(date){
-  const w=weekOf(date), dow=(date.getDay()+6)%7;
+  const w=weekOf(date),dow=(date.getDay()+6)%7,gym=stayAt(date).gym;
   if(w<1) return {kind:"pre",w};
   if(w<=4) return [0,2,4].includes(dow)?{kind:"home",w,name:"Home circuit"}:{kind:"rest",w,name:"Rest day",note:`Walk to ${fmt(stepsFor(w))} steps.`};
   const [,n]=GYM_WEEK[dow];
-  return SESSIONS[n]?{kind:"gym",w,name:n}:{kind:"rest",w,name:n,note:`${fmt(stepsFor(w))} steps.`};
+  return SESSIONS[n]?{kind:"gym",w,name:n,gym}:{kind:"rest",w,name:n,note:`${fmt(stepsFor(Math.min(w,26)))} steps.`};
 }
+function dateForWeekday(i,base){ // weekday i (0 = Mon) in the plan week around `base`
+  const st=parse(state.settings.start);let b=base<st?st:base;
+  const d=new Date(b);d.setDate(b.getDate()-((b.getDay()+6)%7)+i);if(d<st)d.setDate(d.getDate()+7);return d;
+}
+function dayTag(i,base){const s=sessionFor(dateForWeekday(i,base));
+  return s.kind==="home"?"Home circuit":s.kind==="gym"?(s.gym?s.name:s.name+" · no gym"):s.name.replace(/[,:].*$/,"");}
 function flexAdvice(diff){
   if(Math.abs(diff)<75) return `<span class="pill good">On target</span> No change needed.`;
   if(diff>0){const parts=[];let left=diff;
-    for(const [t,k] of [["one more fist of starch at lunch",180],["30 g groundnuts",170],["a banana",105],["an extra egg",75]]){if(left>=k*.7){parts.push(t);left-=k;}if(left<60)break;}
+    for(const [t,k] of [["one more fist of starch at lunch",180],["30 g groundnuts or a level spoon of peanut butter",170],["a banana",105],["an extra egg",75]]){if(left>=k*.7){parts.push(t);left-=k;}if(left<60)break;}
     return `<span class="pill warn">Add ≈${fmt(diff)} kcal</span> For example ${parts.join(", ")}. Put extra carbs around training.`;}
-  return `<span class="pill warn">Remove ≈${fmt(-diff)} kcal</span> Shrink starch first (half a fist ≈ 90 kcal), then the snack fruit or groundnuts. Keep every protein portion.`;
+  return `<span class="pill warn">Remove ≈${fmt(-diff)} kcal</span> Shrink starch first (half a fist ≈ 90 kcal), then the snack fruit or nuts. Keep every protein portion.`;
 }
 function entries(){return Object.entries(state.log).map(([d,v])=>({d,w:+v.w,waist:v.waist!=null?+v.waist:null})).sort((a,b)=>a.d<b.d?-1:1);}
 function weekly(){
@@ -399,12 +502,27 @@ function paceOf(prev,cur){
   return pct>1.2?['bad','Too fast']:pct>=.4?['good','On pace']:pct>=.15?['warn','Slow']:['warn','Flat'];
 }
 function toast(t){const el=$("#toast");el.textContent=t;el.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>el.hidden=true,2200);}
+const longDate=d=>d.toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"});
 const ICON_CHEV='<svg width="8" height="14" viewBox="0 0 8 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:.35;flex:none"><path d="m1 1 6 6-6 6"/></svg>';
+const ICON_PIN='<svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor" aria-hidden="true" style="flex:none"><path d="M6 0a5.5 5.5 0 0 0-5.5 5.5C.5 9.6 6 14 6 14s5.5-4.4 5.5-8.5A5.5 5.5 0 0 0 6 0Zm0 7.6a2 2 0 1 1 0-4.1 2 2 0 0 1 0 4.1Z"/></svg>';
 
 /* ================= TODAY ================= */
+function moveCard(now){
+  const mv=nextMove(now),cur=stayAt(now),prev=prevStay(cur);
+  if(mv){const days=Math.round((parse(mv.from)-parse(iso(now)))/DAY);
+    if(days<=7){const r2=calc(parse(mv.from));
+      return `<div class="card stack" style="margin-bottom:12px"><div class="meal-h"><b>${PLACES[mv.place].name} ${days===1?"tomorrow":"on "+longDate(parse(mv.from))}</b><span class="pill">${days} day${days===1?"":"s"}</span></div>
+      <ul class="rules"><li><b>Travel day:</b> eat around maintenance; don't try to diet in an airport. Pack protein you can carry: tuna pouches, protein bars, nuts.</li>
+      <li>Drink water on the flight and walk the terminal. No workout that day.</li>
+      <li>After you land, expect the scale to jump 1–2 kg from salt, carbs and travel. It's water. Compare weekly averages from your second week.</li>
+      <li>From ${longDate(parse(mv.from))} your target is <b>${fmt(r2.kcal)} kcal</b>${mv.gym?" and training moves to the gym":""}.</li></ul></div>`;}}
+  if(prev&&prev.place!==cur.place){const since=Math.round((parse(iso(now))-parse(cur.from))/DAY);
+    if(since>=0&&since<7)return `<div class="card" style="margin-bottom:12px"><div class="meal-h"><b>Settling into ${PLACES[cur.place].name}</b><span class="pill">Day ${since+1}</span></div><p class="note" style="margin-top:4px">Ignore the scale this week; travel and new food move water around. Get the shopping done, cook a batch, and get your steps in.</p></div>`;}
+  return "";
+}
 function renderToday(){
-  const r=calc(),now=new Date(),w=weekOf(now),p=phaseOf(w),s=state.settings;
-  const sess=sessionFor(now),day=DAYS[todayIdx()],[dk,dp]=dayTotals(day);
+  const now=new Date(),r=calc(now),w=weekOf(now),p=phaseOf(w),s=state.settings,stay=r.stay;
+  const sess=sessionFor(now),day=MEALPLAN[stay.place][todayIdx()],[dk,dp]=dayTotals(day);
   const frac=Math.max(0,Math.min(1,(w-1)/26+((now.getDay()+6)%7+1)/182));
   const C=2*Math.PI*40;
   const es=entries(),wk=weekly(),last=wk[wk.length-1],prev=wk[wk.length-2];
@@ -412,37 +530,40 @@ function renderToday(){
   const standalone=window.navigator.standalone||matchMedia("(display-mode: standalone)").matches;
   const ios=/iPhone|iPad|iPod/.test(navigator.userAgent);
   let train="";
-  if(sess.kind==="pre") train=`<p>Your plan starts on <b>${parse(s.start).toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"})}</b>. Use the days before to buy a kitchen scale and stock up on protein.</p>`;
+  if(sess.kind==="pre"){const st=parse(s.start),first=stayAt(st);
+    train=`<p>Starts <b>${st.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"})}</b> in ${PLACES[first.place].name}. Before then: buy a kitchen scale, install MyFitnessPal, and stock up on eggs, chicken, oats and frozen veg.</p>`;}
   else if(sess.kind==="home") train=`<div class="meal-h"><b>Home circuit</b><span class="muted">Week ${w}</span></div><p class="note" style="margin-top:4px">${HOME.map(h=>h[0]).join(" · ")}</p>`;
-  else if(sess.kind==="gym"){const ex=SESSIONS[sess.name];train=`<div class="meal-h"><b>${sess.name}</b>${DELOADS.includes(w)?'<span class="pill warn">Deload: half the sets</span>':`<span class="muted">${ex.length} exercises</span>`}</div><p class="note" style="margin-top:4px">${ex.slice(0,4).map(e=>e[0]).join(" · ")}${ex.length>4?` and ${ex.length-4} more`:""}</p>`;}
+  else if(sess.kind==="gym"){const ex=SESSIONS[sess.name],col=sess.gym?0:3;
+    train=`<div class="meal-h"><b>${sess.name}${sess.gym?"":" · no-gym version"}</b>${DELOADS.includes(w)?'<span class="pill warn">Deload: half the sets</span>':`<span class="muted">${ex.length} exercises</span>`}</div><p class="note" style="margin-top:4px">${ex.slice(0,4).map(e=>e[col]).join(" · ")}${ex.length>4?` and ${ex.length-4} more`:""}</p>`;}
   else train=`<div class="meal-h"><b>${sess.name}</b></div><p class="note" style="margin-top:4px">${sess.note||""} Recovery is part of the plan.</p>`;
 
   $("#v-today").innerHTML=`
     <h1 class="lt">Today</h1>
-    <p class="sub">${now.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"})}</p>
+    <p class="sub" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${now.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"})} <span class="pill" style="display:inline-flex;gap:5px;align-items:center">${ICON_PIN}${placeLabel(stay)}</span></p>
     ${!standalone&&ios&&!state.ui.installDismissed?`<div class="card" style="margin-bottom:12px"><div class="meal-h"><b>Install the app</b><button class="btn plain" data-act="dismiss-install">Dismiss</button></div><p class="note">Tap the Share button in Safari, then <b>Add to Home Screen</b>. It then opens full-screen and works offline.</p></div>`:""}
+    ${moveCard(now)}
     <div class="card hero">
       <svg class="ring" viewBox="0 0 96 96" aria-hidden="true">
         <circle class="trk" cx="48" cy="48" r="40" fill="none" stroke-width="9"/>
         <circle cx="48" cy="48" r="40" fill="none" stroke="${p?p.color:"var(--accent)"}" stroke-width="9" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C*(1-frac)}" transform="rotate(-90 48 48)"/>
         <text x="48" y="46" text-anchor="middle" font-size="24" font-weight="700">${w<1?0:Math.min(w,99)}</text>
-        <text x="48" y="64" text-anchor="middle" font-size="11" fill="var(--muted)" style="fill:var(--muted)">of 26</text>
+        <text x="48" y="64" text-anchor="middle" font-size="11" style="fill:var(--muted)">of 26</text>
       </svg>
       <div style="min-width:0">
-        <span class="slot">${w<1?"Not started":w>26?"Plan complete":"Week "+w}</span>
+        <span class="slot">${w<1?`Starts in ${Math.ceil((parse(s.start)-parse(iso(now)))/DAY)} days`:w>26?"Plan complete":"Week "+w}</span>
         <h3 style="display:flex;align-items:center;gap:8px;margin-top:2px">${p?`<span class="chip" style="background:${p.color}"></span>${p.name}`:w<1?"Get ready":"Maintenance"}</h3>
-        <p class="note" style="margin-top:4px">${BREAKS.includes(w)?`Diet break: eat ≈${fmt(r.maint)} kcal this week.`:DELOADS.includes(w)?"Deload week: same weights, half the sets.":p?p.train.split(".")[0]+".":"Reverse to maintenance, then pick your next phase."}</p>
+        <p class="note" style="margin-top:4px">${BREAKS.includes(w)?`Diet break: eat ≈${fmt(r.maint)} kcal this week.`:DELOADS.includes(w)?"Deload week: same weights, half the sets.":p?p.train.split(".")[0]+".":w<1?"Use the time to set up your kitchen and routine.":"Reverse to maintenance, then pick your next phase."}</p>
       </div>
     </div>
     <div class="tiles" style="margin-top:12px">
-      <div class="tile"><span>Calories</span><b>${fmt(BREAKS.includes(w)?r.maint:r.kcal)}</b><span>kcal</span></div>
+      <div class="tile"><span>Calories</span><b>${fmt(BREAKS.includes(w)?r.maint:r.kcal)}</b><span>kcal · ${ACT_LABEL[r.act]||"custom"}</span></div>
       <div class="tile"><span>Protein</span><b>${r.protein}</b><span>grams</span></div>
       <div class="tile"><span>Steps</span><b>${w<1?"–":fmt(stepsFor(Math.min(w,26)))}</b><span>today</span></div>
     </div>
     <h2 class="sh">Training</h2>
     <button class="card" data-go="train" style="display:flex;gap:12px;align-items:center;width:100%;text-align:left;border:0">
       <div style="flex:1;min-width:0">${train}</div>${ICON_CHEV}</button>
-    <h2 class="sh">Meals · ${day.full}</h2>
+    <h2 class="sh">Meals · ${day.full} · ${PLACES[stay.place].name}</h2>
     <div class="list">
       ${day.meals.map(([slot,name,items])=>`<button class="row" data-go="food" style="width:100%;border:0;background:none;text-align:left"><div class="l"><span class="slot">${slot}</span><div>${name}</div></div><span class="r num">${fmt(mealTotals(items)[0])}</span>${ICON_CHEV}</button>`).join("")}
       <div class="row"><div class="l"><b>${fmt(dk)}</b> <span class="muted">of ${fmt(r.kcal)} kcal · ${fmt(dp)} g protein</span></div></div>
@@ -457,16 +578,21 @@ function renderToday(){
 }
 
 /* ================= FOOD ================= */
-let foodDay=todayIdx();
+let foodDay=todayIdx(),foodPlace=null;
 function renderFood(){
-  const r=calc(),day=DAYS[foodDay],[K,P]=dayTotals(day);
-  const groups={};for(const f of Object.values(FOOD))(groups[f[2]]=groups[f[2]]||[]).push(f);
+  if(!foodPlace)foodPlace=stayAt(new Date()).place;
+  const base=dateForPlace(foodPlace),r=calc(base),plan=MEALPLAN[foodPlace],day=plan[foodDay],[K,P]=dayTotals(day),info=PLACE_INFO[foodPlace];
+  const keys=new Set(info.extras);plan.forEach(d=>d.meals.forEach(m=>m[2].forEach(([k])=>keys.add(k))));
+  const groups={};for(const k of keys){const f=FOOD[k];(groups[f[2]]=groups[f[2]]||[]).push(f);}
+  const ORDER=["Protein","Protein + carb","Starch","Soup and veg","Fruit","Fat"];
+  const here=stayAt(new Date()).place===foodPlace;
   $("#v-food").innerHTML=`
     <h1 class="lt">Food</h1>
-    <p class="sub">7-day rotation of Nigerian meals. Estimates for home cooking.</p>
-    <div class="hscroll"><div class="seg glass" role="tablist">${DAYS.map((d,i)=>`<button role="tab" aria-selected="${i===foodDay}" data-day="${i}">${d.d}</button>`).join("")}</div></div>
+    <p class="sub">${here?"Where you are now.":`Planning ahead: your numbers from ${longDate(base)}.`} Estimates for home cooking.</p>
+    <div class="seg glass" role="tablist" aria-label="Location">${Object.entries(PLACES).map(([k,v])=>`<button role="tab" aria-selected="${k===foodPlace}" data-place="${k}">${v.name}</button>`).join("")}</div>
+    <div class="hscroll"><div class="seg glass" role="tablist" aria-label="Day">${plan.map((d,i)=>`<button role="tab" aria-selected="${i===foodDay}" data-day="${i}">${d.d}</button>`).join("")}</div></div>
     <div class="card">
-      <div class="meal-h" style="margin-bottom:12px"><h3>${day.full}</h3><span class="pill">${day.tag}</span></div>
+      <div class="meal-h" style="margin-bottom:12px"><h3>${day.full}</h3><span class="pill">${dayTag(foodDay,base)}</span></div>
       ${day.meals.map(([slot,name,items])=>{const [k,p]=mealTotals(items);return `<div class="meal"><div class="meal-h"><div><span class="slot">${slot}</span><div><b>${name}</b></div></div><span class="num muted" style="font-size:14px;white-space:nowrap">${fmt(k)} kcal · ${fmt(p)} g</span></div>
         <ul class="items">${items.map(([key,q])=>{const f=FOOD[key];return `<li><span>${f[0]} <span class="muted">· ${q>1?q+" × ":""}${f[1]}</span></span><span>${fmt(f[3]*q)}</span></li>`}).join("")}</ul></div>`}).join("")}
     </div>
@@ -476,37 +602,35 @@ function renderFood(){
       <p style="font-size:15px">${flexAdvice(r.kcal-K)}${P<r.protein-10?` Protein is ${fmt(r.protein-P)} g short: add whey, a tin of tuna or 3 eggs.`:""}</p>
     </div>
 
+    <h2 class="sh">Eating in ${PLACES[foodPlace].name}</h2>
+    <div class="list">${info.food.map(([a,b])=>`<div class="row"><div class="l"><b style="font-weight:600">${a}</b><small>${b}</small></div></div>`).join("")}</div>
+
     <h2 class="sh">Daily rules</h2>
     <div class="card"><ul class="rules">
-      <li><b>Protein at every meal.</b> A palm of fish, chicken, eggs, beans or soya each time.</li>
+      <li><b>Protein at every meal.</b> A palm of fish, chicken, eggs, beans or yoghurt each time.</li>
       <li><b>Measure oil.</b> Use a teaspoon, not a pour. 1 tbsp is about 120 kcal.</li>
-      <li><b>Half the plate vegetables</b> at lunch and dinner: efo, ugu, okra, garden egg, cabbage.</li>
-      <li><b>Drink water, not calories.</b> Malt and soft drinks can add 300–500 kcal a day.</li>
-      <li><b>Batch-cook twice a week:</b> stew, efo and grilled chicken in containers.</li>
-      <li><b>Log every bite for 4 weeks</b> in MyFitnessPal or Cronometer to calibrate your eye.</li>
+      <li><b>Half the plate vegetables</b> at lunch and dinner.</li>
+      <li><b>Drink water, not calories.</b> Sugary drinks can add 300–500 kcal a day.</li>
+      <li><b>Batch-cook twice a week:</b> stew, protein and a soup in containers.</li>
+      <li><b>Log every bite for 4 weeks</b> to calibrate your eye, and again for a week after every move.</li>
+      <li><b>Timing:</b> 3–4 meals with 25–45 g protein each, with a carb and protein meal before and after training.</li>
     </ul></div>
 
     <h2 class="sh">Hidden calories</h2>
-    <div class="list">${[["Malt drink, 33 cl",200,"Water, zero-sugar soda"],["Soft drink, 35 cl",150,"Zero-sugar version"],["Sweetened zobo, 50 cl",170,"Unsweetened with ginger"],["Fried plantain (dodo), 1",350,"Boiled or roasted, ≈220"],["Meat pie",370,"Boiled egg and fruit"],["Puff-puff, each",100,"Cap at 2"],["Chin chin, 50 g",250,"Roasted corn"],["Instant noodles, 1 pack",320,"Add 2 eggs and veg; log it"],["Egusi soup, 1 bowl","400+","Measure oil, add ugu"],["Suya, 100 g",280,"Lean cuts, light oil"]].map(([a,k,b])=>`<div class="row"><div class="l">${a}<small>${b}</small></div><span class="r num">${typeof k==="number"?fmt(k):k}</span></div>`).join("")}</div>
+    <div class="list">${info.hidden.map(([a,k,b])=>`<div class="row"><div class="l">${a}<small>${b}</small></div><span class="r num">${typeof k==="number"?fmt(k):k}</span></div>`).join("")}</div>
 
     <h2 class="sh">Food reference</h2>
-    ${Object.entries(groups).map(([g,fs])=>`<p class="slot" style="margin:14px 4px 6px">${g}</p><div class="list">${fs.map(f=>`<div class="row"><div class="l">${f[0]}<small>${f[1]}</small></div><span class="r num">${fmt(f[3])} kcal<br>${fmt(f[4],f[4]%1?1:0)} g P</span></div>`).join("")}</div>`).join("")}
-
-    <h2 class="sh">Tips</h2>
-    <div class="card stack" style="font-size:15.5px">
-      <p><b>Cheap protein.</b> Eggs, beans, soya chunks, sardines, titus and whole chicken without skin give the most protein per naira. Kpomo is mostly collagen, so don't count it toward your total.</p>
-      <p><b>Parties.</b> At an owambe, fill the plate with protein first, take one serving of rice, and go easy on small chops. Back to the plan at the next meal; don't starve the next day.</p>
-      <p><b>Timing.</b> 3–4 meals with 25–45 g protein each. A carb and protein meal 1–3 hours before training and another within a few hours after.</p>
-    </div>`;
+    ${ORDER.filter(g=>groups[g]).map(g=>`<p class="slot" style="margin:14px 4px 6px">${g}</p><div class="list">${groups[g].map(f=>`<div class="row"><div class="l">${f[0]}<small>${f[1]}</small></div><span class="r num">${fmt(f[3])} kcal<br>${fmt(f[4],f[4]%1?1:0)} g P</span></div>`).join("")}</div>`).join("")}`;
 }
 
 /* ================= TRAIN ================= */
-let trainMode=null, trainSession=null;
+let trainMode=null,trainSession=null,trainGym=null;
 function renderTrain(){
-  const now=new Date(),w=weekOf(now),sess=sessionFor(now);
+  const now=new Date(),w=weekOf(now),sess=sessionFor(now),stay=stayAt(now);
   if(!trainMode)trainMode=w>=5?"gym":"home";
   if(!trainSession)trainSession=sess.kind==="gym"?sess.name:"Upper A";
-  const hw=w>=1&&w<=4?w:0, dow=(now.getDay()+6)%7;
+  if(trainGym===null)trainGym=w>=5?stay.gym:stayAt(weekStart(5)).gym;
+  const hw=w>=1&&w<=4?w:0,dow=(now.getDay()+6)%7,info=PLACE_INFO[stay.place];
   let body="";
   if(trainMode==="home"){
     body=`<p class="note" style="margin:0 4px 12px">Mon, Wed, Fri. Do the exercises in order as a circuit, 60–90 s rest between rounds. Fill a backpack with books or water bottles for weight.</p>
@@ -516,10 +640,12 @@ function renderTrain(){
     <p class="note" style="margin:10px 4px 0">Stop each set with 1–3 good reps left. Scroll the table sideways for later weeks.</p>`;
   }else{
     const ex=SESSIONS[trainSession];
-    body=`<div class="hscroll" style="margin-bottom:12px"><div style="display:flex;gap:6px;width:max-content">${GYM_WEEK.map(([d,n],i)=>`<div class="tile" style="padding:8px 10px;min-width:74px;${i===dow?"outline:2px solid var(--accent);":""}"><span>${d}</span><b style="font-size:13px;font-family:var(--sans);line-height:1.25">${n.replace(/,.*$/,"").replace(/:.*$/,"")}</b></div>`).join("")}</div></div>
+    body=`<div class="hscroll" style="margin-bottom:12px"><div style="display:flex;gap:6px;width:max-content">${GYM_WEEK.map(([d,n],i)=>`<div class="tile" style="padding:8px 10px;min-width:74px;${i===dow?"outline:2px solid var(--accent);":""}"><span>${d}</span><b style="font-size:13px;font-family:var(--sans);line-height:1.25">${n.replace(/[,:].*$/,"")}</b></div>`).join("")}</div></div>
     <div class="hscroll"><div class="seg glass" role="tablist">${Object.keys(SESSIONS).map(n=>`<button role="tab" aria-selected="${n===trainSession}" data-session="${n}">${n}</button>`).join("")}</div></div>
+    <div class="seg glass" role="tablist" aria-label="Equipment"><button role="tab" aria-selected="${trainGym}" data-gymmode="1">Gym</button><button role="tab" aria-selected="${!trainGym}" data-gymmode="0">No gym</button></div>
     ${DELOADS.includes(w)?`<div class="card" style="margin-bottom:12px"><span class="pill warn">Deload week</span> <span class="note">Same weights, half the sets.</span></div>`:""}
-    <div class="list">${ex.map((e,i)=>`<div class="row"><div class="l"><span class="slot">${i+1}</span> <b>${e[0]}</b><small>No gym: ${e[3]}</small></div><span class="r"><span class="num" style="color:var(--ink)">${e[1]}</span><br>rest ${e[2]}</span></div>`).join("")}</div>
+    <div class="list">${ex.map((e,i)=>`<div class="row"><div class="l"><span class="slot">${i+1}</span> <b>${trainGym?e[0]:e[3]}</b><small>${trainGym?"No gym: "+e[3]:"In a gym: "+e[0]}</small></div><span class="r"><span class="num" style="color:var(--ink)">${e[1]}</span><br>rest ${e[2]}</span></div>`).join("")}</div>
+    ${trainGym?"":`<p class="note" style="margin:8px 4px 0">No-gym sets: when the top of the rep range gets easy, slow the lowering to 3 seconds, add a pause, or load the backpack heavier.</p>`}
     <h2 class="sh">How to progress</h2>
     <div class="card"><ul class="rules">
       <li><b>Double progression.</b> When every set reaches the top of the rep range, add 1–2.5 kg on upper lifts or 2.5–5 kg on lower lifts.</li>
@@ -529,22 +655,23 @@ function renderTrain(){
     </ul></div>
     <h2 class="sh">Every session</h2>
     <div class="card"><ul class="rules">
-      <li><b>Warm up 8 minutes:</b> 5 minutes easy cardio, then 2 lighter sets of the first lift.</li>
+      <li><b>Warm up 8–10 minutes:</b> easy cardio, then 2 lighter sets of the first lift.</li>
       <li><b>Rest</b> 2–3 minutes on big lifts, 60–90 s on small ones.</li>
-      <li><b>Film</b> a set of squats and RDLs in week 5 to check your form.</li>
+      <li><b>Film</b> a set of squats and RDLs in your first gym week to check form.</li>
       <li><b>Finisher</b> from week 11: 10–15 minutes incline walk after lower days.</li>
       <li><b>Sharp or joint pain:</b> stop that exercise and use the no-gym version.</li>
     </ul></div>`;
   }
-  $("#v-train").innerHTML=`<h1 class="lt">Train</h1><p class="sub">${w<1?"Starts with the home block":w<=4?`Week ${w} · home block`:`Week ${Math.min(w,26)} · gym split`}</p>
-    <div class="seg glass" role="tablist"><button role="tab" aria-selected="${trainMode==="home"}" data-mode="home">Weeks 1–4 · Home</button><button role="tab" aria-selected="${trainMode==="gym"}" data-mode="gym">Weeks 5–26 · Gym</button></div>
-    ${body}`;
+  $("#v-train").innerHTML=`<h1 class="lt">Train</h1><p class="sub">${w<1?"Starts with the home block":w<=4?`Week ${w} · home block`:`Week ${Math.min(w,26)} · ${stay.gym?"gym split":"no-gym split"}`} · ${PLACES[stay.place].name}</p>
+    <div class="seg glass" role="tablist"><button role="tab" aria-selected="${trainMode==="home"}" data-mode="home">Weeks 1–4 · Home</button><button role="tab" aria-selected="${trainMode==="gym"}" data-mode="gym">Weeks 5–26 · Split</button></div>
+    ${body}
+    <h2 class="sh">Moving in ${PLACES[stay.place].name} · ${w<1?fmt(6000):fmt(stepsFor(Math.min(w,26)))} steps a day</h2>
+    <div class="list">${info.move.map(([a,b])=>`<div class="row"><div class="l"><b style="font-weight:600">${a}</b><small>${b}</small></div></div>`).join("")}</div>`;
 }
 
 /* ================= PROGRESS ================= */
-function targetAt(k,startW,rate,goal){let n=0;for(let i=1;i<=k;i++)if(!BREAKS.includes(i))n++;return Math.max(goal,startW-rate*n);}
 function chartSVG(){
-  const r=calc(),s=state.settings,es=entries(),wk=weekly(),goal=+s.goal,startW=es.length?es[0].w:+s.weight;
+  const s=state.settings,es=entries(),wk=weekly(),goal=+s.goal,startW=es.length?es[0].w:+s.weight,proj=project(startW);
   const W=340,H=210,L=32,R=8,T=10,B=24,lastWeek=Math.max(26,...wk.map(x=>x.k));
   const vals=[startW,goal,...es.map(e=>e.w)];let lo=Math.floor(Math.min(...vals)-1),hi=Math.ceil(Math.max(...vals)+1);
   const step=hi-lo>16?4:2;lo=Math.floor(lo/step)*step;hi=Math.ceil(hi/step)*step;
@@ -552,15 +679,18 @@ function chartSVG(){
   let g="";
   for(let v=lo;v<=hi;v+=step)g+=`<line class="grid" x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}"/><text class="ax" x="${L-6}" y="${y(v)+3.5}" text-anchor="end">${v}</text>`;
   for(let k=0;k<=lastWeek;k+=4)g+=`<text class="ax" x="${x(k)}" y="${H-8}" text-anchor="middle">${k?"W"+k:"0"}</text>`;
-  g+=`<line class="goal" x1="${L}" x2="${W-R}" y1="${y(goal)}" y2="${y(goal)}"/>`;
-  let d="";for(let k=0;k<=lastWeek;k++)d+=(k?"L":"M")+x(k).toFixed(1)+" "+y(targetAt(k,startW,r.rate,goal)).toFixed(1);
-  g+=`<path class="target" d="${d}"/>`;
+  // shade stays by place
   const st=parse(s.start).getTime();
+  state.stays.forEach((sy,i)=>{const a=Math.max(0,(parse(sy.from).getTime()-st)/DAY/7),nx=state.stays[i+1],b=nx?Math.min(lastWeek,(parse(nx.from).getTime()-st)/DAY/7):lastWeek;
+    if(b>a&&a<lastWeek)g+=`<rect x="${x(a).toFixed(1)}" y="${T}" width="${(x(b)-x(a)).toFixed(1)}" height="${H-T-B}" fill="${sy.place==="london"?"var(--p-blue)":"var(--p-green)"}" opacity=".06"/><text class="ax" x="${(x(a)+3).toFixed(1)}" y="${T+10}">${PLACES[sy.place].name}</text>`;});
+  g+=`<line class="goal" x1="${L}" x2="${W-R}" y1="${y(goal)}" y2="${y(goal)}"/>`;
+  let d="";for(let k=0;k<=lastWeek;k++)d+=(k?"L":"M")+x(k).toFixed(1)+" "+y(proj.path[Math.min(k,80)]).toFixed(1);
+  g+=`<path class="target" d="${d}"/>`;
   for(const e of es){const k=(parse(e.d).getTime()-st)/DAY/7;if(k>=0&&k<=lastWeek)g+=`<circle class="dot" cx="${x(k).toFixed(1)}" cy="${y(e.w).toFixed(1)}" r="2.5"/>`;}
   const pts=wk.filter(p=>p.k>=1).map(p=>[x(p.k-.5),y(p.avg)]);
   if(pts.length>1)g+=`<path class="avg" d="${pts.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join("")}"/>`;
   pts.forEach((p,i)=>g+=`<circle class="avgdot" cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="${i===pts.length-1?4.5:3}"/>`);
-  if(!es.length)g+=`<text class="empty" x="${(L+W-R)/2}" y="${T+34}" text-anchor="middle">Your weigh-ins will plot here.</text>`;
+  if(!es.length)g+=`<text class="empty" x="${(L+W-R)/2}" y="${T+40}" text-anchor="middle">Your weigh-ins will plot here.</text>`;
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Weight trend against target path">${g}</svg>`;
 }
 function renderProgress(){
@@ -580,7 +710,7 @@ function renderProgress(){
     <h2 class="sh">Weekly averages</h2>
     <div class="list">${wk.length?wk.slice().reverse().map((x,i,a)=>{const pv=a[i+1],[c,t]=paceOf(pv,x),ch=pv?x.avg-pv.avg:null;return `<div class="row"><div class="l"><b>Week ${x.k}</b><small>${ch==null?"":(ch>0?"+":"")+fmt(ch,2)+" kg"}${x.waist?` · waist ${fmt(x.waist,1)} cm`:""}</small></div><span class="r num" style="color:var(--ink)">${fmt(x.avg,1)}</span><span class="pill ${c}">${t}</span></div>`}).join(""):`<div class="row"><span class="muted">Appears after your first weigh-in.</span></div>`}</div>
     <h2 class="sh">Recent weigh-ins</h2>
-    <div class="list">${es.length?es.slice(-14).reverse().map(e=>`<div class="row"><div class="l">${parse(e.d).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"})}${e.waist?`<small>Waist ${fmt(e.waist,1)} cm</small>`:""}</div><span class="r num" style="color:var(--ink)">${fmt(e.w,1)} kg</span><button class="btn danger" data-del="${e.d}" aria-label="Delete ${e.d}">Delete</button></div>`).join(""):`<div class="row"><span class="muted">No weigh-ins yet.</span></div>`}</div>
+    <div class="list">${es.length?es.slice(-14).reverse().map(e=>`<div class="row"><div class="l">${longDate(parse(e.d))}${e.waist?`<small>Waist ${fmt(e.waist,1)} cm</small>`:""}</div><span class="r num" style="color:var(--ink)">${fmt(e.w,1)} kg</span><button class="btn danger" data-del="${e.d}" aria-label="Delete ${e.d}">Delete</button></div>`).join(""):`<div class="row"><span class="muted">No weigh-ins yet.</span></div>`}</div>
     <h2 class="sh">Every 4 weeks</h2>
     <div class="card"><ul class="rules">
       <li>Front, side and back photos in the same light and clothes.</li>
@@ -596,21 +726,35 @@ function renderPlan(){
   const flags=[];
   if(+s.goal>=+s.weight)flags.push(["bad","Your goal weight isn't below your current weight."]);
   flags.push(["warn",`<b>The old plan's 1,400–1,500 kcal</b> is ≈${fmt(r.tdee-1450)} kcal under your maintenance: ≈${fmt(r.oldRate,2)} kg a week (${fmt(r.oldPct,1)}% of body weight). Past 1% a week you lose more muscle. This plan caps the deficit there.`]);
-  if(r.reqRate>r.rate+.02)flags.push(["warn",`${s.goal} kg in 26 weeks needs ${fmt(r.reqRate,2)} kg a week. At a safe pace you'll be ≈<b>${fmt(r.at26,1)} kg at week 26</b> and reach the goal near week ${r.weeksToGoal}.`]);
-  else if(+s.goal<+s.weight)flags.push(["good",`Your goal fits in 26 weeks at ${fmt(r.rate,2)} kg a week.`]);
+  if(r.at26>+s.goal+.05)flags.push(["warn",`${s.goal} kg in 26 weeks needs ${fmt(r.reqRate,2)} kg a week. At a safe pace you'll be ≈<b>${fmt(r.at26,1)} kg at week 26</b> and reach the goal near week ${isFinite(r.weeksToGoal)?r.weeksToGoal:"–"}.`]);
+  else if(+s.goal<+s.weight)flags.push(["good",`Your goal fits in 26 weeks at a safe pace.`]);
   if(r.floored)flags.push(["warn","Your target hit the minimum floor. Get more of the deficit from steps."]);
   flags.push(r.bmiGoal<18.5?["bad",`${s.goal} kg is a BMI of ${fmt(r.bmiGoal,1)} at your height: underweight. Pick a higher goal.`]:["good",`Goal BMI ${fmt(r.bmiGoal,1)} (now ${fmt(r.bmiNow,1)}). Since you're building muscle, judge the finish by waist and mirror too.`]);
   const pk=r.protein*4,fk=r.fat*9,ck=r.carbs*4,tot=pk+fk+ck||1;
   const row=(id,label,input)=>`<label class="row" for="${id}"><span class="l">${label}</span>${input}</label>`;
-  const adjust=[["Losing 0.5–1% of body weight a week, lifts steady.","Change nothing."],[`Losing under ${fmt(+s.weight*.0025,2)} kg a week for 2+ weeks, logging honestly.`,"Check oil, drinks and weekends first. Then cut 100–150 kcal (half a fist of starch) or add 2,000 steps. One change only."],["Scale flat, waist down, lifts up.","Fat loss is hidden by water and muscle. Wait one more week."],[`Losing over ${fmt(+s.weight*.012,2)} kg a week, strength dropping, always hungry.`,"Add 150–200 kcal of carbs around training."],["Lifts drop two sessions running, joints ache, poor sleep.","Take the next deload now. Check sleep and protein."],["Stalled 3+ weeks in weeks 13–20.",`7-day diet break at maintenance, ≈${fmt(r.maint)} kcal for you now. Then resume.`],["Missed sessions or a heavy weekend.","Don't starve or add punishment cardio. Restart at the next meal and session."],["Exams or illness.","Drop to 3 sessions or just walk. Keep protein high. Maintenance calories while ill."]];
+  const adjust=[["Losing 0.5–1% of body weight a week, lifts steady.","Change nothing."],[`Losing under ${fmt(+s.weight*.0025,2)} kg a week for 2+ weeks, logging honestly.`,"Check oil, drinks and weekends first. Then cut 100–150 kcal (half a fist of starch) or add 2,000 steps. One change only."],["Scale flat, waist down, lifts up.","Fat loss is hidden by water and muscle. Wait one more week."],[`Losing over ${fmt(+s.weight*.012,2)} kg a week, strength dropping, always hungry.`,"Add 150–200 kcal of carbs around training."],["Lifts drop two sessions running, joints ache, poor sleep.","Take the next deload now. Check sleep and protein."],["Stalled 3+ weeks in weeks 13–20.",`7-day diet break at maintenance, ≈${fmt(r.maint)} kcal for you now. Then resume.`],["Just moved country.","Ignore the scale for a week. Log food carefully for that week; new food means new portions."],["Missed sessions or a heavy weekend.","Don't starve or add punishment cardio. Restart at the next meal and session."],["Exams or illness.","Drop to 3 sessions or just walk. Keep protein high. Maintenance calories while ill."]];
+  const stayKcal=sy=>{const d=parse(sy.from)<parse(s.start)?parse(s.start):parse(sy.from);const c=calc(d);return `${fmt(c.kcal)} kcal at the start (${ACT_LABEL[c.act]||"custom"} activity)`;};
 
   $("#v-plan").innerHTML=`
-    <h1 class="lt">Plan</h1><p class="sub">${fmt(+s.weight,1)} kg → ${fmt(+s.goal,1)} kg · from ${parse(s.start).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})}</p>
+    <h1 class="lt">Plan</h1><p class="sub">${fmt(+s.weight,1)} kg → ${fmt(+s.goal,1)} kg · from ${parse(s.start).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short",year:"numeric"})}</p>
     <div class="tiles">
-      <div class="tile"><span>Calories</span><b>${fmt(r.kcal)}</b><span>maint. ≈${fmt(r.maint)}</span></div>
+      <div class="tile"><span>Calories now</span><b>${fmt(r.kcal)}</b><span>maint. ≈${fmt(r.maint)}</span></div>
       <div class="tile"><span>Loss / week</span><b>${fmt(r.rate,2)}</b><span>kg · ${fmt(r.pct,1)}%</span></div>
       <div class="tile"><span>Week 26</span><b>${fmt(r.at26,1)}</b><span>${r.at26<=+s.goal+.05?"goal reached":"goal ≈ wk "+(isFinite(r.weeksToGoal)?r.weeksToGoal:"–")}</span></div>
     </div>
+
+    <h2 class="sh">Where you'll be</h2>
+    <div class="list">
+      ${state.stays.map((sy,i)=>`<div class="row stay">
+        <div class="stay-top"><span style="display:flex;align-items:center;gap:6px;color:var(--accent)">${ICON_PIN}<select id="stay-place-${i}" data-stay="${i}" data-field="place" aria-label="Place">${Object.entries(PLACES).map(([k,v])=>`<option value="${k}" ${k===sy.place?"selected":""}>${v.name}</option>`).join("")}</select></span>
+          <input id="stay-from-${i}" type="date" value="${sy.from}" data-stay="${i}" data-field="from" aria-label="From date"></div>
+        <div class="stay-top"><label for="stay-gym-${i}" style="display:flex;align-items:center;gap:10px;font-size:15px"><input id="stay-gym-${i}" class="switch" type="checkbox" ${sy.gym?"checked":""} data-stay="${i}" data-field="gym">Gym access</label>
+          ${state.stays.length>1?`<button class="btn danger" data-stay-del="${i}">Remove</button>`:""}</div>
+        <small>From ${longDate(parse(sy.from))}${state.stays[i+1]?` to ${longDate(new Date(parse(state.stays[i+1].from).getTime()-DAY))}`:" onwards"} · ${stayKcal(sy)}</small>
+      </div>`).join("")}
+      <button class="row" data-act="add-stay" style="width:100%;border:0;background:none;text-align:left;color:var(--accent)">Add a stay</button>
+    </div>
+    <p class="note" style="margin:8px 4px 0">Each stay lasts until the next one starts. Meals, activity tips, gym or no-gym sessions and calories follow where you are on each date.</p>
 
     <h2 class="sh">Your details</h2>
     <div class="list">
@@ -619,12 +763,12 @@ function renderPlan(){
       ${row("f-height","Height (cm)",`<input id="f-height" type="number" inputmode="decimal" min="130" max="220">`)}
       ${row("f-weight","Current weight (kg)",`<input id="f-weight" type="number" step="0.1" inputmode="decimal">`)}
       ${row("f-goal","Goal weight (kg)",`<input id="f-goal" type="number" step="0.1" inputmode="decimal">`)}
-      ${row("f-activity","Activity",`<select id="f-activity"><option value="1.375">Light</option><option value="1.55">Moderate</option><option value="1.725">High</option></select>`)}
+      ${row("f-activity","Activity",`<select id="f-activity"><option value="auto">Auto</option><option value="1.375">Light</option><option value="1.55">Moderate</option><option value="1.725">High</option></select>`)}
       ${row("f-start","Start date",`<input id="f-start" type="date">`)}
     </div>
-    <p class="note" style="margin:8px 4px 0">${s.examples?"<b>Age and height are examples (21, 175 cm).</b> Enter yours. ":""}Moderate = 4 gym days and ~10k steps. Update your weight every 4 weeks.</p>
+    <p class="note" style="margin:8px 4px 0">${s.examples?"<b>Age and height are examples (21, 175 cm).</b> Enter yours. ":""}Auto uses light activity for home training or no gym, and moderate for 4 gym days with ~10k steps. Update your weight every 4 weeks.</p>
 
-    <h2 class="sh">Macros</h2>
+    <h2 class="sh">Macros now</h2>
     <div class="card stack">
       <div class="meter" style="height:12px;display:flex;background:none;gap:2px"><span style="width:${pk/tot*100}%;background:var(--p-red)"></span><span style="width:${ck/tot*100}%;background:var(--p-yellow)"></span><span style="width:${fk/tot*100}%;background:var(--p-blue)"></span></div>
       <div class="tiles">
@@ -639,17 +783,17 @@ function renderPlan(){
 
     <h2 class="sh">Timeline</h2>
     <div class="card">
-      <div class="weeks">${Array.from({length:30},(_,i)=>{const w=i+1,p=phaseOf(w);return `<div class="wk ${p?"":"after"} ${DELOADS.includes(w)?"deload":""} ${w===now?"now":""}" style="${p?`background-color:${p.color}`:""}" title="Week ${w}">${BREAKS.includes(w)?"DB":w}</div>`}).join("")}</div>
+      <div class="weeks">${Array.from({length:30},(_,i)=>{const w=i+1,p=phaseOf(w),pl=stayAt(weekStart(w)).place;return `<div class="wk ${p?"":"after"} ${DELOADS.includes(w)?"deload":""} ${w===now?"now":""}" style="${p?`background-color:${p.color}`:""}" title="Week ${w} · ${PLACES[pl].name}">${BREAKS.includes(w)?"DB":w}</div>`}).join("")}</div>
       <p class="note" style="margin-top:10px">Striped = deload. DB = diet break at maintenance. Outlined = this week. Weeks 27–30: reverse to maintenance.</p>
     </div>
-    <div style="margin-top:12px">${PHASES.map(p=>`<details class="phase" ${now>=p.weeks[0]&&now<=p.weeks[1]?"open":""}><summary><span class="bar5" style="background:${p.color}"></span><span style="flex:1"><b>${p.name}</b><br><span class="note">Weeks ${p.weeks[0]}–${p.weeks[1]}</span></span>${now>=p.weeks[0]&&now<=p.weeks[1]?'<span class="pill good">Now</span>':""}</summary>
+    <div style="margin-top:12px">${PHASES.map(p=>`<details class="phase" ${now>=p.weeks[0]&&now<=p.weeks[1]?"open":""}><summary><span class="bar5" style="background:${p.color}"></span><span style="flex:1"><b>${p.name}</b><br><span class="note">Weeks ${p.weeks[0]}–${p.weeks[1]} · ${[...new Set(Array.from({length:p.weeks[1]-p.weeks[0]+1},(_,j)=>PLACES[stayAt(weekStart(p.weeks[0]+j)).place].name))].join(", then ")}</span></span>${now>=p.weeks[0]&&now<=p.weeks[1]?'<span class="pill good">Now</span>':""}</summary>
       <dl><dt>Training</dt><dd>${p.train}</dd><dt>Food</dt><dd>${p.food}</dd><dt>Steps</dt><dd>${p.steps}</dd><dt>Checkpoint</dt><dd>${p.check}</dd></dl></details>`).join("")}</div>
 
     <h2 class="sh">Adjustments</h2>
     <div class="list">${adjust.map(([a,b])=>`<div class="row"><div class="l"><b style="font-weight:600">${a}</b><small>${b}</small></div></div>`).join("")}</div>
 
     <h2 class="sh">Recovery</h2>
-    <div class="list">${[["Sleep","7–9 hours. Short sleep raises hunger and costs muscle. Fixed wake time, screens off 30 minutes before bed."],["Water and salt","2.5–3.5 L a day in Lagos heat, plus ≈500 ml per training hour. Don't cut salt hard; you sweat a lot of it out."],["Supplements","Optional. Creatine 3–5 g daily for strength; expect 1–2 kg of water weight at first. Whey is just convenient protein. Skip fat burners."],["Busy weeks","Plan on Sunday: training slots, shopping list, batch cooking. In exam weeks drop to 3 sessions and keep protein and steps."],["Slow down if","You feel dizzy or faint, can't sleep, lose strength for 3+ weeks, or start bingeing. Eat at maintenance for a week; see a doctor if it continues."],["After week 26","Add 100–150 kcal a week until maintenance. Then keep cutting to finish, or start a lean-gain phase (+200–300 kcal) to build muscle."]].map(([a,b])=>`<div class="row"><div class="l"><b style="font-weight:600">${a}</b><small>${b}</small></div></div>`).join("")}</div>
+    <div class="list">${[["Sleep","7–9 hours. Short sleep raises hunger and costs muscle. Fixed wake time, screens off 30 minutes before bed."],["Water in London",PLACE_INFO.london.water],["Water in Lagos",PLACE_INFO.lagos.water],["Vitamin D in the UK","The NHS advises everyone in the UK to consider 10 micrograms of vitamin D a day from October to March, when there isn't enough sunlight. Supermarkets sell it cheaply."],["Supplements","Optional. Creatine 3–5 g daily for strength; expect 1–2 kg of water weight at first. Whey is just convenient protein. Skip fat burners."],["Busy weeks","Plan on Sunday: training slots, shopping list, batch cooking. In exam weeks drop to 3 sessions and keep protein and steps."],["Slow down if","You feel dizzy or faint, can't sleep, lose strength for 3+ weeks, or start bingeing. Eat at maintenance for a week; see a doctor if it continues."],["After week 26","Add 100–150 kcal a week until maintenance. Then keep cutting to finish, or start a lean-gain phase (+200–300 kcal) to build muscle."]].map(([a,b])=>`<div class="row"><div class="l"><b style="font-weight:600">${a}</b><small>${b}</small></div></div>`).join("")}</div>
 
     <h2 class="sh">Appearance</h2>
     <div class="list">
@@ -666,12 +810,22 @@ function renderPlan(){
     <p class="note" style="margin:8px 4px 0">Everything stays on this phone. Export a backup now and then, and before changing phones.</p>
     <p class="note" style="margin:22px 4px 0">Calories use the Mifflin-St Jeor equation (±10% for most people); your real 3–4 week trend is the better guide. General guidance, not medical advice.</p>`;
 
-  for(const f of ["sex","age","height","weight","goal","activity","start"]){const el=$("#f-"+f);el.value=s[f];
-    el.addEventListener("change",()=>{const v=el.value;if(v==="")return;s[f]=(f==="sex"||f==="start")?v:+v;if(f==="age"||f==="height")s.examples=false;save();renderPlan();toast("Plan updated");});}
+  for(const f of ["sex","age","height","weight","goal","activity","start"]){const el=$("#f-"+f);el.value=String(s[f]);
+    el.addEventListener("change",()=>{const v=el.value;if(v==="")return;s[f]=(f==="sex"||f==="start"||v==="auto")?v:+v;if(f==="age"||f==="height")s.examples=false;save();renderPlan();toast("Plan updated");});}
+  document.querySelectorAll("#v-plan [data-stay]").forEach(el=>el.addEventListener("change",()=>{
+    const sy=state.stays[+el.dataset.stay],f=el.dataset.field;
+    if(f==="gym")sy.gym=el.checked;else if(f==="place"){sy.place=el.value;}else{if(!el.value)return;sy.from=el.value;}
+    state.stays.sort((a,b)=>a.from<b.from?-1:1);save();foodPlace=null;trainGym=null;renderPlan();toast("Stays updated");
+  }));
   $("#theme-sel").value=state.ui.theme;
   $("#theme-sel").addEventListener("change",e=>{state.ui.theme=e.target.value;applyUI();save();});
   $("#glass-slider").addEventListener("input",e=>{state.ui.glass=+e.target.value;applyUI();});
   $("#glass-slider").addEventListener("change",save);
+}
+function addStay(){
+  const last=state.stays[state.stays.length-1],d=parse(last.from>iso(new Date())?last.from:iso(new Date()));d.setDate(d.getDate()+30);
+  const place=last.place==="lagos"?"london":"lagos";
+  state.stays.push({place,from:iso(d),gym:place==="lagos"});save();renderPlan();toast("Stay added. Set its date.");
 }
 
 /* ================= shell ================= */
@@ -705,18 +859,22 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change",applyUI);
 $("#tabbar").addEventListener("click",e=>{const b=e.target.closest(".tab");if(!b)return;if(b.dataset.tab===current)window.scrollTo({top:0,behavior:"smooth"});else go(b.dataset.tab);});
 
 document.addEventListener("click",e=>{
-  const t=e.target.closest("[data-go],[data-act],[data-day],[data-mode],[data-session],[data-del]");if(!t)return;
-  if(t.dataset.go){if(t.dataset.go==="food")foodDay=todayIdx();if(t.dataset.go==="train"){trainMode=null;trainSession=null;}go(t.dataset.go);}
+  const t=e.target.closest("[data-go],[data-act],[data-day],[data-place],[data-mode],[data-session],[data-gymmode],[data-del],[data-stay-del]");if(!t)return;
+  if(t.dataset.go){if(t.dataset.go==="food"){foodDay=todayIdx();foodPlace=null;}if(t.dataset.go==="train"){trainMode=null;trainSession=null;trainGym=null;}go(t.dataset.go);}
+  else if(t.dataset.place){foodPlace=t.dataset.place;renderFood();}
+  else if(t.dataset.gymmode){trainGym=t.dataset.gymmode==="1";renderTrain();}
+  else if(t.dataset.stayDel){state.stays.splice(+t.dataset.stayDel,1);save();foodPlace=null;trainGym=null;renderPlan();toast("Stay removed");}
   else if(t.dataset.day){foodDay=+t.dataset.day;renderFood();}
   else if(t.dataset.mode){trainMode=t.dataset.mode;renderTrain();}
   else if(t.dataset.session){trainSession=t.dataset.session;renderTrain();}
   else if(t.dataset.del){delete state.log[t.dataset.del];save();rerender();toast("Weigh-in deleted");}
   else{const a=t.dataset.act;
     if(a==="log")openSheet();
+    if(a==="add-stay")addStay();
     if(a==="dismiss-install"){state.ui.installDismissed=true;save();renderToday();}
     if(a==="export")exportData();
     if(a==="import")$("#import-file").click();
-    if(a==="reset"){if(t.dataset.armed){localStorage.removeItem(KEY);state={settings:{...DEFAULTS},log:{},ui:{...UI_DEFAULTS}};applyUI();save();rerender();toast("All data erased");}
+    if(a==="reset"){if(t.dataset.armed){localStorage.removeItem(KEY);state=hydrate(null);applyUI();save();rerender();toast("All data erased");}
       else{t.dataset.armed="1";t.textContent="Tap again to erase everything";setTimeout(()=>{if(t.isConnected){delete t.dataset.armed;t.textContent="Erase all data";}},4000);}}
   }
 });
@@ -745,7 +903,7 @@ async function exportData(){
 $("#import-file").addEventListener("change",async e=>{
   const f=e.target.files[0];e.target.value="";if(!f)return;
   try{const d=JSON.parse(await f.text());if(!d||typeof d.log!=="object"||typeof d.settings!=="object")throw 0;
-    state={settings:{...DEFAULTS,...d.settings},log:d.log,ui:{...UI_DEFAULTS,...(d.ui||{})}};save();applyUI();rerender();toast(`Imported ${Object.keys(d.log).length} weigh-ins`);}
+    state=hydrate(d);save();foodPlace=null;trainGym=null;applyUI();rerender();toast(`Imported ${Object.keys(d.log).length} weigh-ins`);}
   catch(_){toast("That file isn't a Blueprint backup");}
 });
 
@@ -753,7 +911,7 @@ $("#import-file").addEventListener("change",async e=>{
 applyUI();
 go(location.hash.slice(1)||"today",{push:true});
 let lastDay=iso(new Date());
-document.addEventListener("visibilitychange",()=>{if(!document.hidden&&iso(new Date())!==lastDay){lastDay=iso(new Date());foodDay=todayIdx();rerender();}});
+document.addEventListener("visibilitychange",()=>{if(!document.hidden&&iso(new Date())!==lastDay){lastDay=iso(new Date());foodDay=todayIdx();foodPlace=null;trainGym=null;rerender();}});
 if("serviceWorker" in navigator&&location.protocol!=="file:")addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(()=>{}));
 })();
 </script>
